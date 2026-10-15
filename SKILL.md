@@ -18,6 +18,8 @@ One long-lived chromium; each CLI call reconnects, acts, and exits -- so an agen
 - `./browse wait '<css>' [--timeout ms]` block until a selector appears (for JS pages).
 - `./browse eval '<js>'` run JS in the page, print JSON result.
 - `./browse info` active url+title. `./browse stop` kill chromium.
+- `./browse watch [--ms N] [<cmd ...>]` DevTools view: runs a browse command and prints the console, uncaught exceptions and network responses/failures it caused, then keeps listening N ms (default 1000). With no command, it only listens. Earlier events are not replayed.
+  `./browse watch click @3` -> `console.error  ...`, `exception  TypeError: ...`, `net 404  Fetch  <url>`, `net FAIL  Script  net::ERR_...`. Use it to debug a page that misbehaves after an action.
 
 ## Hybrid targeting (the point)
 

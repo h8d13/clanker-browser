@@ -13,6 +13,7 @@
 #   ./browse type @5 "hello"
 #   ./browse key Enter
 #   ./browse wait '.results'        block until JS renders, then observe
+#   ./browse watch click @3         + console/exceptions/network it caused
 #   ./browse stop
 import argparse
 import json
@@ -315,6 +316,64 @@ def run_js(expr):
 		print(json.dumps(s.page.evaluate(expr)))
 
 
+# --- devtools ---------------------------------------------------------------
+
+def _arg_text(a):
+	# RemoteObject: primitives carry "value"; objects a shallow "preview".
+	if "preview" in a:
+		props = a["preview"]["properties"]
+		if a.get("subtype") == "array":
+			return "[{}]".format(", ".join(
+				str(p.get("value", p["type"])) for p in props))
+		return "{{{}}}".format(", ".join("{}: {}".format(
+			p["name"], p.get("value", p["type"])) for p in props))
+	return str(a.get("value", a.get("description", a.get("type"))))
+
+
+def _devtools_line(method, e):
+	if method == "Runtime.consoleAPICalled":
+		return "console.{}  {}".format(
+			e["type"], " ".join(_arg_text(a) for a in e["args"]))
+	if method == "Runtime.exceptionThrown":
+		d = e["exceptionDetails"]
+		text = d.get("exception", {}).get("description", d["text"])
+		return "exception  {}".format(text.splitlines()[0])
+	if method == "Network.responseReceived":
+		return "net {}  {:<10} {}".format(
+			e["response"]["status"], e["type"], e["response"]["url"])
+	return "net FAIL  {:<10} {}".format(e["type"], e["errorText"])
+
+
+def watch(inner, settle=1000):
+	# Console/Network are CDP event streams: only an attached client sees them,
+	# and every other command detaches on exit. So stay attached here and run
+	# the inner command as a child (a second CDP client on the same chromium),
+	# then keep listening `settle` ms for async fallout. Events go to stdout
+	# as they're dispatched, after the child's own output.
+	if inner and inner[0] == "--":
+		inner = inner[1:]
+	if inner and inner[0] in ("start", "stop", "watch"):
+		_log("can't watch `{}`".format(inner[0]))
+		sys.exit(2)
+	rc = 0
+	# Runtime.enable replays the page's past console/exceptions before it
+	# returns; drop those so output is only what happens during the watch.
+	live = []
+	with _Session() as s:
+		cdp = s.page.context.new_cdp_session(s.page)
+		for m in ("Runtime.consoleAPICalled", "Runtime.exceptionThrown",
+				"Network.responseReceived", "Network.loadingFailed"):
+			cdp.on(m, lambda e, m=m: live and print(_devtools_line(m, e)))
+		cdp.send("Runtime.enable")
+		cdp.send("Network.enable")
+		live.append(True)
+		if inner:
+			self_cmd = [sys.executable, os.path.abspath(__file__)]
+			rc = subprocess.run(self_cmd + inner).returncode
+		s.page.wait_for_timeout(settle)
+	sys.exit(rc)
+
+
 # --- CLI --------------------------------------------------------------------
 
 def main():
@@ -359,6 +418,13 @@ def main():
 	p = sub.add_parser("eval", help="evaluate JS in active page")
 	p.add_argument("expr")
 
+	p = sub.add_parser("watch",
+		help="stream console/exceptions/network while running a command")
+	p.add_argument("--ms", type=int, default=1000,
+		help="keep listening after the command (default 1000)")
+	p.add_argument("inner", nargs=argparse.REMAINDER,
+		help="browse command to run, e.g. click @3 (none = just listen)")
+
 	a = ap.parse_args()
 	if a.cmd == "start":
 		start(port=a.port, headful=not a.headless)
@@ -386,6 +452,8 @@ def main():
 		nav(a.cmd)
 	elif a.cmd == "eval":
 		run_js(a.expr)
+	elif a.cmd == "watch":
+		watch(a.inner, settle=a.ms)
 
 
 if __name__ == "__main__":
